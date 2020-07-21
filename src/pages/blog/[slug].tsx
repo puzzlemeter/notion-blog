@@ -1,5 +1,6 @@
-import React from 'react'
-import Head from 'next/head'
+import Link from 'next/link'
+import fetch from 'node-fetch'
+import { useRouter } from 'next/router'
 import Header from '../../components/header'
 import Heading from '../../components/heading'
 import components from '../../components/dynamic'
@@ -7,27 +8,53 @@ import ReactJSXParser from '@zeit/react-jsx-parser'
 import blogStyles from '../../styles/blog.module.css'
 import { textBlock } from '../../lib/notion/renderers'
 import getPageData from '../../lib/notion/getPageData'
+import React, { CSSProperties, useEffect } from 'react'
 import getBlogIndex from '../../lib/notion/getBlogIndex'
 import getNotionUsers from '../../lib/notion/getNotionUsers'
 import { getBlogLink, getDateStr } from '../../lib/blog-helpers'
 
 // Get the data for each blog post
-export async function unstable_getStaticProps({ params: { slug } }) {
+export async function getStaticProps({ params: { slug }, preview }) {
   // load the postsTable so that we can get the page's ID
   const postsTable = await getBlogIndex()
   const post = postsTable[slug]
 
-  if (!post) {
+  // if we can't find the post or if it is unpublished and
+  // viewed without preview mode then we just redirect to /blog
+  if (!post || (post.Published !== 'Yes' && !preview)) {
     console.log(`Failed to find post for slug: ${slug}`)
     return {
       props: {
         redirect: '/blog',
+        preview: false,
       },
-      revalidate: 5,
+      unstable_revalidate: 5,
     }
   }
   const postData = await getPageData(post.id)
   post.content = postData.blocks
+
+  for (let i = 0; i < postData.blocks.length; i++) {
+    const { value } = postData.blocks[i]
+    const { type, properties } = value
+    if (type == 'tweet') {
+      const src = properties.source[0][0]
+      // parse id from https://twitter.com/_ijjk/status/TWEET_ID format
+      const tweetId = src.split('/')[5].split('?')[0]
+      if (!tweetId) continue
+
+      try {
+        const res = await fetch(
+          `https://api.twitter.com/1/statuses/oembed.json?id=${tweetId}`
+        )
+        const json = await res.json()
+        properties.html = json.html.split('<script')[0]
+        post.hasTweet = true
+      } catch (_) {
+        console.log(`Failed to get tweet embed for ${src}`)
+      }
+    }
+  }
 
   const { users } = await getNotionUsers(post.Authors || [])
   post.Authors = Object.keys(users).map(id => users[id].full_name)
@@ -35,20 +62,30 @@ export async function unstable_getStaticProps({ params: { slug } }) {
   return {
     props: {
       post,
+      preview: preview || false,
     },
-    revalidate: 10,
+    unstable_revalidate: 10,
   }
 }
 
 // Return our list of blog posts to prerender
-export async function unstable_getStaticPaths() {
+export async function getStaticPaths() {
   const postsTable = await getBlogIndex()
-  return Object.keys(postsTable).map(slug => getBlogLink(slug))
+  // we fallback for any unpublished posts to save build time
+  // for actually published ones
+  return {
+    paths: Object.keys(postsTable)
+      .filter(post => postsTable[post].Published === 'Yes')
+      .map(slug => getBlogLink(slug)),
+    fallback: true,
+  }
 }
 
 const listTypes = new Set(['bulleted_list', 'numbered_list'])
 
-const RenderPost = ({ post, redirect }) => {
+const RenderPost = ({ post, redirect, preview }) => {
+  const router = useRouter()
+
   let listTagName: string | null = null
   let listLastId: string | null = null
   let listMap: {
@@ -60,20 +97,59 @@ const RenderPost = ({ post, redirect }) => {
     }
   } = {}
 
-  if (redirect) {
+  useEffect(() => {
+    const twitterSrc = 'https://platform.twitter.com/widgets.js'
+    // make sure to initialize any new widgets loading on
+    // client navigation
+    if (post && post.hasTweet) {
+      if ((window as any)?.twttr?.widgets) {
+        ;(window as any).twttr.widgets.load()
+      } else if (!document.querySelector(`script[src="${twitterSrc}"]`)) {
+        const script = document.createElement('script')
+        script.async = true
+        script.src = twitterSrc
+        document.querySelector('body').appendChild(script)
+      }
+    }
+  }, [])
+  useEffect(() => {
+    if (redirect && !post) {
+      router.replace(redirect)
+    }
+  }, [redirect, post])
+
+  // If the page is not yet generated, this will be displayed
+  // initially until getStaticProps() finishes running
+  if (router.isFallback) {
+    return <div>Loading...</div>
+  }
+
+  // if you don't have a post at this point, and are not
+  // loading one from fallback then  redirect back to the index
+  if (!post) {
     return (
-      <>
-        <Head>
-          <meta name="robots" content="noindex" />
-          <meta httpEquiv="refresh" content={`0;url=${redirect}`} />
-        </Head>
-      </>
+      <div className={blogStyles.post}>
+        <p>
+          Woops! didn't find that post, redirecting you back to the blog index
+        </p>
+      </div>
     )
   }
 
   return (
     <>
       <Header titlePre={post.Page} />
+      {preview && (
+        <div className={blogStyles.previewAlertContainer}>
+          <div className={blogStyles.previewAlert}>
+            <b>Note:</b>
+            {` `}Viewing in preview mode{' '}
+            <Link href={`/api/clear-preview?slug=${post.Slug}`}>
+              <button className={blogStyles.escapePreview}>Exit Preview</button>
+            </Link>
+          </div>
+        </div>
+      )}
       <div className={blogStyles.post}>
         <h1>{post.Page || ''}</h1>
         {post.Authors.length > 0 && (
@@ -162,9 +238,15 @@ const RenderPost = ({ post, redirect }) => {
               }
               break
             case 'image':
-            case 'video': {
+            case 'video':
+            case 'embed': {
               const { format = {} } = value
-              const { block_width } = format
+              const {
+                block_width,
+                block_height,
+                display_source,
+                block_aspect_ratio,
+              } = format
               const baseBlockWidth = 768
               const roundFactor = Math.pow(10, 2)
               // calculate percentages
@@ -172,24 +254,72 @@ const RenderPost = ({ post, redirect }) => {
                 ? `${Math.round(
                     (block_width / baseBlockWidth) * 100 * roundFactor
                   ) / roundFactor}%`
-                : '100%'
+                : block_height || '100%'
 
               const isImage = type === 'image'
               const Comp = isImage ? 'img' : 'video'
+              const useWrapper = block_aspect_ratio && !block_height
+              const childStyle: CSSProperties = useWrapper
+                ? {
+                    width: '100%',
+                    height: '100%',
+                    border: 'none',
+                    position: 'absolute',
+                    top: 0,
+                  }
+                : {
+                    width,
+                    border: 'none',
+                    height: block_height,
+                    display: 'block',
+                    maxWidth: '100%',
+                  }
+
+              let child = null
+
+              if (!isImage && !value.file_ids) {
+                // external resource use iframe
+                child = (
+                  <iframe
+                    style={childStyle}
+                    src={display_source}
+                    key={!useWrapper ? id : undefined}
+                    className={!useWrapper ? 'asset-wrapper' : undefined}
+                  />
+                )
+              } else {
+                // notion resource
+                child = (
+                  <Comp
+                    key={!useWrapper ? id : undefined}
+                    src={`/api/asset?assetUrl=${encodeURIComponent(
+                      display_source as any
+                    )}&blockId=${id}`}
+                    controls={!isImage}
+                    alt={`An ${isImage ? 'image' : 'video'} from Notion`}
+                    loop={!isImage}
+                    muted={!isImage}
+                    autoPlay={!isImage}
+                    style={childStyle}
+                  />
+                )
+              }
 
               toRender.push(
-                <Comp
-                  key={id}
-                  src={`/api/asset?assetUrl=${encodeURIComponent(
-                    format.display_source as any
-                  )}&blockId=${id}`}
-                  controls={!isImage}
-                  alt={isImage ? 'An image from Notion' : undefined}
-                  loop={!isImage}
-                  muted={!isImage}
-                  autoPlay={!isImage}
-                  style={{ width }}
-                />
+                useWrapper ? (
+                  <div
+                    style={{
+                      paddingTop: `${Math.round(block_aspect_ratio * 100)}%`,
+                      position: 'relative',
+                    }}
+                    className="asset-wrapper"
+                    key={id}
+                  >
+                    {child}
+                  </div>
+                ) : (
+                  child
+                )
               )
               break
             }
@@ -230,7 +360,7 @@ const RenderPost = ({ post, redirect }) => {
               }
               break
             }
-            case 'quote':
+            case 'quote': {
               if (properties.title) {
                 toRender.push(
                   React.createElement(
@@ -241,6 +371,31 @@ const RenderPost = ({ post, redirect }) => {
                 )
               }
               break
+            }
+            case 'callout': {
+              toRender.push(
+                <div className="callout" key={id}>
+                  {value.format?.page_icon && (
+                    <div>{value.format?.page_icon}</div>
+                  )}
+                  <div className="text">
+                    {textBlock(properties.title, true, id)}
+                  </div>
+                </div>
+              )
+              break
+            }
+            case 'tweet': {
+              if (properties.html) {
+                toRender.push(
+                  <div
+                    dangerouslySetInnerHTML={{ __html: properties.html }}
+                    key={id}
+                  />
+                )
+              }
+              break
+            }
             default:
               if (
                 process.env.NODE_ENV !== 'production' &&

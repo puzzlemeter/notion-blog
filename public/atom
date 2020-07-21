@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+  <feed xmlns="http://www.w3.org/2005/Atom">
+    <title>My Blog</title>
+    <subtitle>Blog</subtitle>
+    <link href="/atom" rel="self" type="application/rss+xml"/>
+    <link href="/" />
+    <updated>2020-03-01T15:06:12.367Z</updated>
+    <id>My Notion Blog</id>
+    <entry>
+      <id>/blog/Slug</id>
+      <title>Notion で Blog</title>
+      <link href="/blog/Slug"/>
+      <updated>2020-02-29T15:00:00.802Z</updated>
+      <content type="xhtml">
+        <div xmlns="http://www.w3.org/1999/xhtml">
+          <p>Notion で Blog。</p>
+          <p class="more">
+            <a href="/blog/Slug">Read more</a>
+          </p>
+        </div>
+      </content>
+      <author><name>Sonia Liang</name></author>
+    </entry>
+  </feed>
