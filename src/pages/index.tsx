@@ -12,7 +12,6 @@ export default () => (
         alt="Vercel + Notion"
       />
       <h1>Sonia's Notion Blog</h1>
-      <p>目標は月３本</p>
     </div>
   </>
 )
