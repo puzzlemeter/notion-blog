@@ -8,6 +8,7 @@ const navItems: { label: string; page?: string; link?: string }[] = [
   { label: 'Home', page: '/' },
   { label: 'Blog', page: '/blog' },
   { label: 'Contact', page: '/contact' },
+  { label: 'Resume', link: 'https://registry.jsonresume.org/sonialiang' },
 ]
 
 const ogImageUrl = 'https://notion-blog.now.sh/og-image.png'
